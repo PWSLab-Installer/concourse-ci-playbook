@@ -1,0 +1,93 @@
+- hosts: localhost
+  connection: local
+
+  vars:
+    pip_install_packages:
+      - name: docker
+
+  tasks:
+
+    -   name: Check the release
+        command: hostnamectl
+        register: os_check
+        ignore_errors: yes
+      
+
+    -   name: Fetch Concourse CI Role
+        git:
+            repo: https://github.com/concourse/concourse-docker.git
+            dest: /home/concourse
+            version: master
+            force: yes
+    
+    -   name: Install Role PIP
+        local_action: command ansible-galaxy install -f geerlingguy.pip 
+
+    -   name: Install Role Docker
+        local_action: command ansible-galaxy install -f geerlingguy.docker
+
+    -   name: Check if PIP is already installed
+        stat: path=/usr/bin/pip
+        register: pip_exists
+
+    -   name: Check if Docker is already installed
+        stat: path=/usr/bin/docker
+        register: docker_exists
+
+    -   name: Applying role PIP
+        command: mv ~/.ansible/roles/geerlingguy.pip ~/.ansible/roles/pwslab.pip
+        when: not pip_exists.stat.exists
+        ignore_errors: yes
+
+    -   name: Applying role Docker
+        command: mv ~/.ansible/roles/geerlingguy.docker ~/.ansible/roles/pwslab.docker
+        when: not docker_exists.stat.exists
+        ignore_errors: yes
+
+    -   name: Applying replacement on 20.04 or 8
+        lineinfile:
+            dest: ~/.ansible/roles/pwslab.pip/defaults/main.yml
+            regexp: '^pip_package: '
+            line: 'pip_package: python3-pip'
+            state: present
+        when:
+            - os_check.stdout | regex_search("CentOS Linux 8") or os_check.stdout | regex_search("Ubuntu 20")
+            - not pip_exists.stat.exists
+
+    -   name: Installing PIP
+        include_role:
+            name: pwslab.pip
+        when: not pip_exists.stat.exists
+    
+    -   name: Installing Docker
+        include_role:
+            name: pwslab.docker
+        when: not docker_exists.stat.exists
+
+    -   name: Execute Keys of Concourse
+        shell: ./keys/generate
+        args:
+            chdir: /home/concourse
+
+    -   name: Applying replacement 
+        lineinfile:
+            dest: /home/concourse/docker-compose.yml
+            regexp: '^(.*)CONCOURSE_EXTERNAL_URL(.*)$'
+            line: '      CONCOURSE_EXTERNAL_URL: http://{{ ansible_default_ipv4.address }}:8080'
+            state: present
+    
+    -   name: Run docker-compose.yml
+        shell: docker-compose -f /home/concourse/docker-compose.yml up -d
+
+    -   name: Get Fly
+        get_url:
+            url: https://github.com/concourse/concourse/releases/download/v6.3.1/fly-6.3.1-linux-amd64.tgz
+            dest: /tmp/
+
+    -   name: Extract Fly
+        unarchive:
+            src: /tmp/fly-6.3.1-linux-amd64.tgz
+            dest: /usr/bin
+
+    -   name: Login with Fly
+        shell: fly -t ci login -c http://127.0.0.1:8080 -u test -p test
